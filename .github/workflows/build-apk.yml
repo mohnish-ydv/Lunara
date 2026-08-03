@@ -1,0 +1,87 @@
+name: Build and verify Android app
+
+"on":
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lunara-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Confirm Lunara source
+        shell: bash
+        run: |
+          test -f settings.gradle.kts
+          grep -q 'rootProject.name = "Lunara"' settings.gradle.kts
+          grep -q 'include(":app")' settings.gradle.kts
+          test ! -d engine-core
+          test ! -d engine-platform-android
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.9"
+
+      - name: Normalize executable permissions
+        shell: bash
+        run: chmod +x gradlew scripts/*.sh
+
+      - name: Verify project structure
+        run: bash scripts/verify-project.sh
+
+      - name: Add optional Supabase configuration
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          printf 'SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n' \
+            "$SUPABASE_URL" "$SUPABASE_ANON_KEY" > local.properties
+
+      - name: Unit tests, strict lint and debug APK
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p app/build/verification
+          gradle --continue --no-daemon --stacktrace --warning-mode all clean testDebugUnitTest lintDebug assembleDebug \
+            2>&1 | tee app/build/verification/gradle.log
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: Lunara-M7.1-Debug-APK
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload verification reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: Lunara-M7.1-Verification-Reports
+          path: |
+            app/build/reports/
+            app/build/test-results/
+            app/build/verification/
+          if-no-files-found: warn
+          retention-days: 7
